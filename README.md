@@ -6,159 +6,84 @@ colorTo: indigo
 sdk: docker
 app_port: 7860
 pinned: false
-Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
-🎫 Support Triage OpenEnv
-A customer-support triage reinforcement-learning environment following the
-OpenEnv specification, ready for local,
-Docker, Hugging Face Spaces, and generic PaaS deployment.
-The agent reads support tickets and must:
-classify urgency (`low`, `medium`, `high`)
-route to the correct team
-request clarification when needed
-produce a short, policy-safe resolution response
 ---
-📁 Repository layout
+
+# 🎫 Support Triage OpenEnv
+
+A customer-support triage reinforcement-learning environment following the OpenEnv specification, ready for local development, Docker, Hugging Face Spaces, and generic PaaS deployment. [query]
+
+The agent reads support tickets and must:
+- Classify urgency (`low`, `medium`, `high`)
+- Route to the correct team
+- Request clarification when needed
+- Produce a short, policy-safe resolution response
+
+## Repository layout
+
 ```text
 .
 ├── .github/
 │   └── workflows/
-│       └── ci.yml              ← runs ruff + pytest on every push / PR
+│       └── ci.yml                 # Runs Ruff + pytest on every push / PR
 ├── tests/
-│   ├── test_graders.py         ← 16 unit tests for graders.py + environment.py
-│   └── validate_local.py       ← 7-section HTTP validator (needs server running)
-├── .env.example                ← template for API_BASE_URL MODEL_NAME HF_TOKEN ENV_URL
-├── .gitignore
-├── Dockerfile                  ← builds the image used by docker-compose.yml
-├── Procfile                    ← PaaS start command (Railway / Render)
-├── README.md                   ← this file
-├── app.py                      ← FastAPI server; imports environment.py models.py tasks.py
-├── docker-compose.yml          ← orchestrates app.py + validate_local.py + inference.py
-├── environment.py              ← RL loop; imports models.py tasks.py graders.py
-├── graders.py                  ← reward function; imports models.py tasks.py
-├── inference.py                ← agent baseline; calls app.py /reset /step endpoints
-├── models.py                   ← Pydantic models imported by every other module
-├── openenv.yaml                ← manifest referencing all files and endpoints
-├── pyproject.toml              ← build config; lists app environment graders inference models tasks
-├── requirements.txt            ← pinned deps installed by Dockerfile + run_eval.sh
-├── run_eval.sh                 ← runs requirements.txt → app.py → validate_local.py → inference.py
-├── runtime.txt                 ← python-3.11.9 pin for Railway / Render
-└── tasks.py                    ← task definitions consumed by environment.py graders.py app.py
+│   ├── test_graders.py            # Unit tests for graders.py + environment.py
+│   ├── test_suite.py              # Combined unit + integration suite
+│   └── validate_local.py          # Standalone HTTP validator
+├── app.py                         # FastAPI server exposing OpenEnv endpoints
+├── environment.py                 # Episode state and environment transitions
+├── graders.py                     # Reward / scoring logic
+├── inference.py                   # Agent inference helpers
+├── models.py                      # Pydantic models
+├── tasks.py                       # Task definitions
+├── Dockerfile                     # Container build for Spaces / Docker
+├── Procfile                       # Procfile-based deployment entry
+├── pyproject.toml                 # Project metadata and tool config
+└── README.md
 ```
----
-🗂 File guide & cross-references
-Core application
-File	Imports from	Used by	Purpose
-`models.py`	(none — pure Pydantic)	every other file	`TriageAction`, `TicketObservation`, `TicketState`, `ResetRequest`, `StepResponse`
-`tasks.py`	`models.py` (indirectly via dataclass)	`environment.py`, `graders.py`, `app.py`	Three task definitions: `easy` `medium` `hard` with correct answers and keywords
-`graders.py`	`models.py` → `TriageAction`; `tasks.py` → `Task`	`environment.py`	Rule-based scorer → `(score, feedback)` with score clamped to `[0.0, 1.0]`
-`environment.py`	`models.py` → 3 types; `tasks.py` → `TASKS`; `graders.py` → `grade_action`	`app.py`, `tests/test_graders.py`	Stateful `SupportTriageEnvironment`: `reset()` `step()` `state()`
-`app.py`	`models.py`; `environment.py`; `tasks.py`	`docker-compose.yml`, `Dockerfile`, `inference.py`, `validate_local.py`	FastAPI server — `/reset` `/step` `/state` `/tasks`; session registry with per-episode locks
-`inference.py`	(env vars only)	`run_eval.sh`, `docker-compose.yml` agent service	Agent baseline — calls `app.py` endpoints; emits `[START]` `[STEP]` `[END]` logs
-Configuration & deployment
-File	References	Purpose
-`Dockerfile`	`requirements.txt` (pip install); `app.py` (uvicorn entry point)	`python:3.11-slim`, non-root `appuser` (UID 1000), `PYTHONPATH=/app`, shell-form CMD so `$PORT` expands
-`docker-compose.yml`	`Dockerfile`; `app.py`; `tests/validate_local.py`; `inference.py`; `.env`	Three services: `env_server` → `validator` → `agent` (opt-in via `--profile agent`)
-`openenv.yaml`	`app.py` (endpoints); `models.py` (schemas); `tasks.py` (task ids); `graders.py` (reward); `environment.py` (MAX_STEPS); `inference.py` (entry_point)	OpenEnv manifest — describes the full environment contract
-`pyproject.toml`	`requirements.txt` (mirrors deps); `app.py` `environment.py` `graders.py` `inference.py` `models.py` `tasks.py` (py-modules list)	Build backend, pinned deps, pytest + ruff + mypy config
-`requirements.txt`	(used by) `Dockerfile`, `run_eval.sh`, `pyproject.toml`	Pinned: fastapi uvicorn pydantic openai requests
-`run_eval.sh`	`requirements.txt` → `app.py` → `tests/validate_local.py` → `inference.py`	One-command local eval: install → start server → validate → (optional) agent
-`Procfile`	`app.py`	`web: python -m uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}`
-`runtime.txt`	(used by Railway / Render)	`python-3.11.9`
-`.env.example`	(consumed by) `inference.py`, `run_eval.sh`, `docker-compose.yml` agent	`API_BASE_URL` `MODEL_NAME` `HF_TOKEN` `ENV_URL`
-Tests & validation
-File	Tests / validates	Cross-references
-`tests/test_graders.py`	`graders.py` `environment.py`	imports `models.py` `tasks.py` `graders.py` `environment.py` directly
-`tests/validate_local.py`	`app.py` endpoints live	hits `/reset` `/step` `/state` `/tasks`; verifies `models.py` response shapes; tests session isolation added in `app.py`
-`.github/workflows/ci.yml`	whole repo on push / PR	runs `ruff check .` (config in `pyproject.toml`) then `pytest tests/test_graders.py`
----
-🏆 Tasks  (defined in `tasks.py`)
-ID	Description	Correct team	Urgency	Clarification?
-`easy`	Password reset, clean ticket	`account_support`	`low`	No
-`medium`	Double-charge complaint, missing invoice numbers	`billing`	`medium`	Yes
-`hard`	Enterprise: security breach + billing anomaly + policy violation	`trust_safety`	`high`	No
----
-🎯 Reward breakdown  (implemented in `graders.py`)
-Criterion	Points	Checked against
-Correct team	+0.20	`tasks.py` `Task.correct_team`
-Correct urgency	+0.20	`tasks.py` `Task.correct_urgency`
-Clarification behaviour	+0.20	`tasks.py` `Task.needs_clarification`
-Response keywords	+0.20	`tasks.py` `Task.required_response_keywords`
-Response 10–300 chars	+0.20	response length check in `graders.py`
----
-🚀 Quickstart
-1 — Install
+
+## API endpoints
+
+The app exposes these endpoints:
+- `GET /` — Health check
+- `POST /reset` — Start a new episode for a task
+- `POST /step` — Submit an action for the current episode
+- `GET /state` — Inspect current episode state
+- `GET /tasks` — List available tasks
+
+## Local run
+
+Install dependencies and start the server:
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"      # pyproject.toml [dev] extras
-cp .env.example .env         # fill in API_BASE_URL, MODEL_NAME, HF_TOKEN
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+python -m uvicorn app:app --host 0.0.0.0 --port 7860
 ```
-2 — Run the server  (`app.py`)
+
+Then validate locally:
+
 ```bash
-python -m uvicorn app:app --reload --host 0.0.0.0 --port 7860
-```
-3 — Validate endpoints  (`tests/validate_local.py`)
-```bash
+pytest -v
 python tests/validate_local.py
 ```
-4 — Run unit tests  (`tests/test_graders.py`)
+
+## Docker run
+
+Build and run with Docker:
+
 ```bash
-pytest
-```
-5 — Run the agent baseline  (`inference.py`)
-```bash
-export $(cat .env | xargs)
-python inference.py
-```
-6 — One-command eval  (`run_eval.sh`)
-```bash
-./run_eval.sh                # server + validate
-./run_eval.sh --with-agent   # server + validate + inference.py
-```
----
-🐳 Docker  (`Dockerfile` + `docker-compose.yml`)
-```bash
-# Single container
 docker build -t support-triage-openenv .
-docker run --env-file .env -p 7860:7860 support-triage-openenv
+docker run -p 7860:7860 support-triage-openenv
+```
 
-# Full stack: server + validator
-docker compose up --build
+## CI
 
-# Full stack + agent baseline
-docker compose --profile agent up --build
-```
----
-🤗 Hugging Face Spaces  (`Dockerfile` + `openenv.yaml`)
-Create a new Docker Space.
-Push this repository to the Space.
-Add secrets in Space settings: `API_BASE_URL`, `MODEL_NAME`, `HF_TOKEN`.
-The Space auto-builds via `Dockerfile` and exposes the environment at `https://<your-space>.hf.space`.
----
-☁️ Generic PaaS  (`Procfile` + `runtime.txt`)
-```bash
-# Default start command (Railway / Render)
-python -m uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}
-```
----
-🔌 API reference  (`app.py` · schemas in `models.py`)
-`POST /reset`
-```json
-{ "task_id": "easy" }
-```
-Returns `StepResponse`. Copy `info.episode_id` and pass it as `X-Episode-Id` on all subsequent calls.
-`POST /step`
-Header: `X-Episode-Id: <episode_id>`
-```json
-{
-  "chosen_team": "account_support",
-  "urgency": "low",
-  "ask_clarification": false,
-  "response_text": "We will reset your password shortly."
-}
-```
-Returns `StepResponse` with `reward` (`0.0–1.0` from `graders.py`), `done`, and `feedback`.
-`GET /state`
-Header: `X-Episode-Id: <episode_id>`  
-Returns `TicketState` from `models.py`.
-`GET /tasks`
-No header required. Returns metadata from `tasks.py` `TASKS` dict.
+The CI workflow is intended to:
+- Set up Python 3.11
+- Install the project with dev dependencies
+- Run Ruff
+- Run pytest
+
+## Notes
+
+This project is configured for Hugging Face Spaces with `sdk: docker` and `app_port: 7860`, which matches the Docker-based deployment metadata in the README front matter. The repository metadata in `pyproject.toml` points to the Hugging Face Space and the GitHub repository for this project. [query]
