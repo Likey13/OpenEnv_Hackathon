@@ -1,3 +1,4 @@
+pip install ruff
 ---
 title: Support Triage OpenEnv
 emoji: 🎫
