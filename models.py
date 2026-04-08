@@ -1,10 +1,17 @@
 from __future__ import annotations
+
 from typing import Literal
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel
 
 
 class TriageAction(BaseModel):
-    chosen_team: Literal["account_support", "billing", "technical_support", "trust_safety"]
+    chosen_team: Literal[
+        "account_support",
+        "billing",
+        "technical_support",
+        "trust_safety",
+    ]
     urgency: Literal["low", "medium", "high"]
     ask_clarification: bool
     response_text: str
@@ -38,4 +45,3 @@ class StepResponse(BaseModel):
     observation: TicketObservation
     reward: float
     done: bool
-    info: dict = Field(default_factory=dict)
