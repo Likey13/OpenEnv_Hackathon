@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 
@@ -12,9 +13,14 @@ class Task:
     needs_clarification: bool
     required_response_keywords: list[str]
     progress_hint: str
-    allowed_teams: list[str] = field(default_factory=lambda: [
-        "account_support", "billing", "technical_support", "trust_safety"
-    ])
+    allowed_teams: list[str] = field(
+        default_factory=lambda: [
+            "account_support",
+            "billing",
+            "technical_support",
+            "trust_safety",
+        ]
+    )
 
 
 TASKS: dict[str, Task] = {
@@ -30,42 +36,42 @@ TASKS: dict[str, Task] = {
         correct_urgency="low",
         needs_clarification=False,
         required_response_keywords=["password", "reset", "account"],
-        progress_hint="A straightforward account access issue. Identify the right team and urgency.",
+        progress_hint=(
+            "A straightforward account access issue. "
+            "Identify the right team and urgency."
+        ),
     ),
-
     "medium": Task(
         task_id="medium",
         ticket_text=(
-            "I was charged twice this month but I'm not sure which invoice is wrong. "
-            "Can someone look into this?"
+            "Hello, I was charged twice on my last invoice, but I can't tell "
+            "which subscription line item caused it. Please help me fix this."
         ),
         customer_tier="premium",
         correct_team="billing",
         correct_urgency="medium",
         needs_clarification=True,
-        required_response_keywords=["invoice", "charge", "clarif"],
+        required_response_keywords=["invoice", "charge", "clarify"],
         progress_hint=(
-            "Incomplete billing complaint. You may need to ask for the invoice numbers "
-            "before routing."
+            "Billing issue, but some details are missing. "
+            "A clarification request is appropriate before resolution."
         ),
     ),
-
     "hard": Task(
         task_id="hard",
         ticket_text=(
-            "URGENT: Our enterprise account has been compromised. Someone changed the admin "
-            "email without authorisation. We are also being billed for 500 extra seats we "
-            "never ordered, and one of our users has been sending threatening messages to "
-            "our clients through the platform. We need immediate action on all three issues."
+            "We believe our enterprise workspace may have been compromised. "
+            "Several users were locked out, suspicious API activity appeared overnight, "
+            "and customer data may have been exposed. We need immediate help."
         ),
         customer_tier="enterprise",
         correct_team="trust_safety",
         correct_urgency="high",
         needs_clarification=False,
-        required_response_keywords=["escalat", "secur", "investigat"],
+        required_response_keywords=["investigate", "security", "escalate"],
         progress_hint=(
-            "Multi-issue ticket: account security breach, billing anomaly, and policy violation. "
-            "Prioritise the most critical issue and escalate appropriately."
+            "High-risk security incident affecting an enterprise customer. "
+            "Prioritize safety, severity, and correct escalation path."
         ),
     ),
 }
