@@ -19,7 +19,8 @@ USER appuser
 # how uvicorn sets sys.path at startup (fixes ModuleNotFoundError).
 ENV PYTHONPATH=/app
 ENV PORT=7860
+
 EXPOSE 7860
 
-# Shell form (not exec form) so $PORT expands correctly at runtime
+# Shell form so $PORT expands correctly at runtime
 CMD python -m uvicorn app:app --host 0.0.0.0 --port ${PORT}
