@@ -11,7 +11,7 @@ description: >
 
 tasks:
   - id: easy
-    description: Clean ticket with obvious routing (password reset → account_support, low urgency).
+    description: Clean ticket with obvious routing (password reset -> account_support, low urgency).
   - id: medium
     description: Incomplete billing complaint requiring one clarification before correct routing.
   - id: hard
@@ -19,7 +19,7 @@ tasks:
 
 models:
   action:
-    schema: TriageAction       # defined in models.py
+    schema: TriageAction
     fields:
       - name: chosen_team
         type: "Literal['account_support','billing','technical_support','trust_safety']"
@@ -31,7 +31,7 @@ models:
         type: str
 
   observation:
-    schema: TicketObservation  # defined in models.py
+    schema: TicketObservation
     fields:
       - name: task_id
         type: str
@@ -51,7 +51,7 @@ models:
         type: str
 
   state:
-    schema: TicketState        # defined in models.py
+    schema: TicketState
     fields:
       - name: episode_id
         type: str
@@ -66,52 +66,49 @@ models:
       - name: cumulative_reward
         type: float
 
-endpoints:
-  reset:
-    method: POST
-    path: /reset
-    implemented_in: app.py     # calls environment.py SupportTriageEnvironment.reset()
-    body:
-      task_id: str             # "easy" | "medium" | "hard" — see tasks.py
-    returns: StepResponse      # models.py — includes info.episode_id
-
-  step:
-    method: POST
-    path: /step
-    implemented_in: app.py     # calls environment.py SupportTriageEnvironment.step()
-    headers:
-      X-Episode-Id: str        # UUID returned by /reset; omit for single-client mode
-    body: TriageAction         # models.py
-    returns: StepResponse      # models.py — reward scored by graders.py
-
-  state:
-    method: GET
-    path: /state
-    implemented_in: app.py     # calls environment.py SupportTriageEnvironment.state()
-    headers:
-      X-Episode-Id: str
-    returns: TicketState       # models.py
-
-  tasks:
-    method: GET
-    path: /tasks
-    implemented_in: app.py     # reads tasks.py TASKS dict directly
-    returns: dict              # list of task metadata objects
-
-reward:
-  type: dense
-  range: [0.0, 1.0]
-  implemented_in: graders.py  # grade_action() — pure rule-based, no LLM dependency
-  description: >
-    Partial rewards on each step:
-      +0.20 correct team          (vs tasks.py Task.correct_team)
-      +0.20 correct urgency       (vs tasks.py Task.correct_urgency)
-      +0.20 clarification matches (vs tasks.py Task.needs_clarification)
-      +0.20 response keywords     (vs tasks.py Task.required_response_keywords)
-      +0.20 response 10–300 chars
+api:
+  base_path: /
+  endpoints:
+    - method: GET
+      path: /
+      description: Health check.
+    - method: POST
+      path: /reset
+      description: Start a new episode and return the first observation.
+    - method: POST
+      path: /step
+      description: Submit one TriageAction and receive observation, reward, and done.
+    - method: GET
+      path: /state
+      description: Return the current TicketState for an episode.
+    - method: GET
+      path: /tasks
+      description: Return available tasks and their metadata.
 
 runtime:
-  max_steps: 5                 # enforced in environment.py SupportTriageEnvironment.MAX_STEPS
-  max_minutes: 20
-  hardware: "2 vCPU, 8 GB RAM"
-  entry_point: inference.py    # agent baseline — reads API_BASE_URL, MODEL_NAME, HF_TOKEN
+  max_steps: 5
+  reward_range: [0.0, 1.0]
+  done_when:
+    - reward >= 0.8
+    - step_count >= max_steps
+
+scoring:
+  function: grade_action
+  file: graders.py
+  returns:
+    - score
+    - feedback
+  rubric:
+    correct_team: 0.20
+    correct_urgency: 0.20
+    clarification_behavior: 0.20
+    required_keywords_present: 0.20
+    concise_nonempty_response: 0.20
+
+implementation:
+  server: app.py
+  environment: environment.py
+  models: models.py
+  tasks: tasks.py
+  grader: graders.py
+  baseline_agent: inference.py
