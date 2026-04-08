@@ -10,22 +10,24 @@ Run with the server already started:
     python tests/validate_local.py
     python tests/validate_local.py --base-url https://your-space.hf.space
 """
+
 from __future__ import annotations
+
 import argparse
 import sys
+
 import requests
 
-# ---------------------------------------------------------------------------
-# CLI argument — allows overriding the server URL without editing the file
-# ---------------------------------------------------------------------------
-parser = argparse.ArgumentParser(description="Support Triage OpenEnv – HTTP validator")
+parser = argparse.ArgumentParser(
+    description="Support Triage OpenEnv - HTTP validator"
+)
 parser.add_argument(
     "--base-url",
     default="http://localhost:7860",
     help="Base URL of the running server (default: http://localhost:7860)",
 )
 args, _ = parser.parse_known_args()
-BASE = args.base_url
+BASE = args.base_url.rstrip("/")
 
 DUMMY_ACTION = {
     "chosen_team": "account_support",
@@ -34,135 +36,166 @@ DUMMY_ACTION = {
     "response_text": "We will reset your account password right away.",
 }
 
-PASS = "✓"
-FAIL = "✗"
-errors: list[str] = []
 
-
-def check(label: str, condition: bool, detail: str = "") -> None:
+def check(condition: bool, label: str, detail: str = "") -> None:
     if condition:
-        print(f"  {PASS} {label}")
+        print(f"[PASS] {label}")
     else:
-        msg = f"  {FAIL} {label}" + (f" — {detail}" if detail else "")
-        print(msg)
-        errors.append(msg)
+        print(f"[FAIL] {label}" + (f" - {detail}" if detail else ""))
+        raise SystemExit(1)
 
 
-# ------------------------------------------------------------------
-# [1] Health
-# ------------------------------------------------------------------
-print("\n[1] Health check")
-r = requests.get(f"{BASE}/", timeout=10)
-check("GET / returns 200", r.status_code == 200)
-check("status == ok", r.json().get("status") == "ok")
+def post_reset(task_id: str) -> tuple[str, dict]:
+    response = requests.post(
+        f"{BASE}/reset",
+        json={"task_id": task_id},
+        timeout=10,
+    )
+    check(response.status_code == 200, f"POST /reset ({task_id})", response.text)
+    data = response.json()
+    episode_id = data.get("info", {}).get("episode_id", "")
+    observation = data.get("observation", {})
+    check(bool(episode_id), "reset returns episode_id")
+    return episode_id, observation
 
-# ------------------------------------------------------------------
-# [2] Reset – all three tasks, capture episode_ids
-# ------------------------------------------------------------------
-print("\n[2] Reset")
-episode_ids: dict[str, str] = {}
-for tid in ["easy", "medium", "hard"]:
-    r = requests.post(f"{BASE}/reset", json={"task_id": tid}, timeout=10)
-    check(f"POST /reset task_id={tid} returns 200", r.status_code == 200, r.text[:120])
-    data = r.json()
-    obs = data.get("observation", {})
-    check(f"  observation.task_id == {tid}", obs.get("task_id") == tid)
-    check(f"  observation.ticket_text non-empty", bool(obs.get("ticket_text")))
-    check(f"  observation.allowed_teams is list", isinstance(obs.get("allowed_teams"), list))
-    ep_id = data.get("info", {}).get("episode_id", "")
-    check(f"  info.episode_id non-empty", bool(ep_id))
-    episode_ids[tid] = ep_id
 
-# ------------------------------------------------------------------
-# [3] Step – use X-Episode-Id header
-# ------------------------------------------------------------------
-print("\n[3] Step (with X-Episode-Id header)")
-easy_id = episode_ids.get("easy", "")
-r = requests.post(
-    f"{BASE}/step",
-    json=DUMMY_ACTION,
-    headers={"X-Episode-Id": easy_id},
-    timeout=10,
-)
-check("POST /step returns 200", r.status_code == 200, r.text[:120])
-data = r.json()
-reward = data.get("reward", -1)
-check("reward in [0.0, 1.0]", 0.0 <= reward <= 1.0, f"got {reward}")
-check("'done' key present", "done" in data)
-obs = data.get("observation", {})
-check("observation.feedback non-empty", bool(obs.get("feedback")))
+def post_step(episode_id: str, action: dict | None = None) -> dict:
+    response = requests.post(
+        f"{BASE}/step",
+        json=action or DUMMY_ACTION,
+        headers={"X-Episode-Id": episode_id},
+        timeout=10,
+    )
+    check(response.status_code == 200, "POST /step", response.text)
+    return response.json()
 
-# ------------------------------------------------------------------
-# [4] State
-# ------------------------------------------------------------------
-print("\n[4] State")
-r = requests.get(f"{BASE}/state", headers={"X-Episode-Id": easy_id}, timeout=10)
-check("GET /state returns 200", r.status_code == 200)
-state = r.json()
-for key in ["episode_id", "step_count", "task_id",
-            "clarification_requested", "resolved", "cumulative_reward"]:
-    check(f"  state has key '{key}'", key in state)
-check("  step_count == 1", state.get("step_count") == 1)
 
-# ------------------------------------------------------------------
-# [5] Score range across all tasks
-# ------------------------------------------------------------------
-print("\n[5] Score range (full episode)")
-for tid in ["easy", "medium", "hard"]:
-    r2 = requests.post(f"{BASE}/reset", json={"task_id": tid}, timeout=10)
-    ep = r2.json().get("info", {}).get("episode_id", "")
-    headers = {"X-Episode-Id": ep} if ep else {}
-    final_reward = 0.0
-    for _ in range(5):
-        r = requests.post(f"{BASE}/step", json=DUMMY_ACTION, headers=headers, timeout=10)
-        d = r.json()
-        final_reward = d.get("reward", 0.0)
-        if d.get("done"):
-            break
-    check(f"task={tid} reward in [0.0, 1.0]", 0.0 <= final_reward <= 1.0, str(final_reward))
+def get_state(episode_id: str) -> dict:
+    response = requests.get(
+        f"{BASE}/state",
+        headers={"X-Episode-Id": episode_id},
+        timeout=10,
+    )
+    check(response.status_code == 200, "GET /state", response.text)
+    return response.json()
 
-# ------------------------------------------------------------------
-# [6] Tasks discovery endpoint
-# ------------------------------------------------------------------
-print("\n[6] Tasks endpoint")
-r = requests.get(f"{BASE}/tasks", timeout=10)
-check("GET /tasks returns 200", r.status_code == 200)
-tasks_data = r.json().get("tasks", [])
-check("returns 3 tasks", len(tasks_data) == 3)
-for t in tasks_data:
-    for key in ["task_id", "correct_team", "correct_urgency",
-                "needs_clarification", "progress_hint"]:
-        check(f"  task '{t.get('task_id','?')}' has key '{key}'", key in t)
 
-# ------------------------------------------------------------------
-# [7] Session isolation
-# ------------------------------------------------------------------
-print("\n[7] Session isolation")
-r_a = requests.post(f"{BASE}/reset", json={"task_id": "easy"}, timeout=10)
-r_b = requests.post(f"{BASE}/reset", json={"task_id": "hard"}, timeout=10)
-id_a = r_a.json().get("info", {}).get("episode_id", "")
-id_b = r_b.json().get("info", {}).get("episode_id", "")
-check("Two resets produce different episode_ids", id_a != id_b, f"a={id_a} b={id_b}")
+def get_tasks() -> list[dict]:
+    response = requests.get(f"{BASE}/tasks", timeout=10)
+    check(response.status_code == 200, "GET /tasks", response.text)
+    return response.json().get("tasks", [])
 
-s_a = requests.get(f"{BASE}/state", headers={"X-Episode-Id": id_a}, timeout=10).json()
-s_b = requests.get(f"{BASE}/state", headers={"X-Episode-Id": id_b}, timeout=10).json()
-check("Episode A is task=easy", s_a.get("task_id") == "easy")
-check("Episode B is task=hard", s_b.get("task_id") == "hard")
 
-requests.post(f"{BASE}/step", json=DUMMY_ACTION, headers={"X-Episode-Id": id_a}, timeout=10)
-s_a2 = requests.get(f"{BASE}/state", headers={"X-Episode-Id": id_a}, timeout=10).json()
-s_b2 = requests.get(f"{BASE}/state", headers={"X-Episode-Id": id_b}, timeout=10).json()
-check("Episode A step_count == 1 after step", s_a2.get("step_count") == 1)
-check("Episode B step_count still 0 (no bleed)", s_b2.get("step_count") == 0)
+def validate_health() -> None:
+    response = requests.get(f"{BASE}/", timeout=10)
+    check(response.status_code == 200, "GET /")
+    check(response.json().get("status") == "ok", "health status is ok", str(response.json()))
 
-# ------------------------------------------------------------------
-# Summary
-# ------------------------------------------------------------------
-print()
-if errors:
-    print(f"FAILED — {len(errors)} error(s):")
-    for e in errors:
-        print(f"  {e}")
-    sys.exit(1)
-else:
-    print("ALL CHECKS PASSED ✓")
+
+def validate_reset() -> None:
+    for task_id in ["easy", "medium", "hard"]:
+        episode_id, observation = post_reset(task_id)
+        check(observation.get("task_id") == task_id, f"reset task_id matches ({task_id})")
+        check(bool(observation.get("ticket_text")), f"reset ticket_text exists ({task_id})")
+        check(isinstance(observation.get("allowed_teams"), list), f"allowed_teams is list ({task_id})")
+        check(bool(episode_id), f"episode_id exists ({task_id})")
+
+    response = requests.post(f"{BASE}/reset", json={"task_id": "invalid"}, timeout=10)
+    check(response.status_code == 400, "invalid task returns 400", response.text)
+
+
+def validate_step() -> None:
+    episode_id, _ = post_reset("easy")
+    result = post_step(episode_id)
+
+    reward = result.get("reward", -1)
+    check(isinstance(reward, (int, float)), "step returns numeric reward")
+    check(0.0 <= reward <= 1.0, "step reward in range", str(result))
+    check("done" in result, "step returns done flag")
+    check(bool(result.get("observation", {}).get("feedback")), "step returns feedback")
+
+
+def validate_state() -> None:
+    episode_id, _ = post_reset("easy")
+    post_step(episode_id)
+    state = get_state(episode_id)
+
+    required_keys = [
+        "episode_id",
+        "step_count",
+        "task_id",
+        "clarification_requested",
+        "resolved",
+        "cumulative_reward",
+    ]
+    for key in required_keys:
+        check(key in state, f"state contains {key}")
+
+    check(state.get("step_count") == 1, "state step_count increments")
+
+
+def validate_score_range() -> None:
+    for task_id in ["easy", "medium", "hard"]:
+        episode_id, _ = post_reset(task_id)
+        final_reward = 0.0
+        for _ in range(5):
+            result = post_step(episode_id)
+            final_reward = result.get("reward", 0.0)
+            if result.get("done"):
+                break
+        check(0.0 <= final_reward <= 1.0, f"final reward in range ({task_id})")
+
+
+def validate_tasks() -> None:
+    tasks = get_tasks()
+    check(len(tasks) == 3, "tasks endpoint returns three tasks", str(tasks))
+
+    required_keys = [
+        "task_id",
+        "correct_team",
+        "correct_urgency",
+        "needs_clarification",
+        "progress_hint",
+    ]
+    for i, task in enumerate(tasks, start=1):
+        for key in required_keys:
+            check(key in task, f"task {i} contains {key}")
+
+
+def validate_session_isolation() -> None:
+    episode_a, _ = post_reset("easy")
+    episode_b, _ = post_reset("hard")
+
+    state_a = get_state(episode_a)
+    state_b = get_state(episode_b)
+
+    check(state_a.get("task_id") == "easy", "episode A has easy task")
+    check(state_b.get("task_id") == "hard", "episode B has hard task")
+
+    post_step(episode_a)
+
+    state_a_after = get_state(episode_a)
+    state_b_after = get_state(episode_b)
+
+    check(state_a_after.get("step_count") == 1, "episode A step_count increments")
+    check(state_b_after.get("step_count") == 0, "episode B remains unchanged")
+
+
+def main() -> None:
+    print(f"Validating server at: {BASE}")
+    validate_health()
+    validate_reset()
+    validate_step()
+    validate_state()
+    validate_score_range()
+    validate_tasks()
+    validate_session_isolation()
+    print("All validations passed.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except requests.RequestException as exc:
+        print(f"[FAIL] Request error - {exc}")
+        sys.exit(1)
