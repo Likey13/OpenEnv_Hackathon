@@ -32,30 +32,24 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "httpx>=0.27",        # for FastAPI TestClient
+    "httpx>=0.27",
 ]
 
 [project.urls]
-Homepage = "https://huggingface.co/spaces/<your-username>/support-triage-openenv"
-Repository = "https://github.com/<your-username>/support-triage-openenv"
-"Bug Tracker" = "https://github.com/<your-username>/support-triage-openenv/issues"
+Homepage = "https://huggingface.co/spaces/Likey13/OpenEnv_Hackathon"
+Repository = "https://github.com/Likey13/OpenEnv_Hackathon"
+"Bug Tracker" = "https://github.com/Likey13/OpenEnv_Hackathon/issues"
 
 # Flat-file layout — all modules live in the repo root, not inside a package folder
 [tool.setuptools]
 py-modules = ["app", "environment", "graders", "inference", "models", "tasks"]
 
-# ---------------------------------------------------------------------------
-# pytest
-# ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
-# ---------------------------------------------------------------------------
-# ruff (linter + formatter — optional, remove if not using)
-# ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
 target-version = "py311"
@@ -64,9 +58,6 @@ target-version = "py311"
 select = ["E", "F", "I", "UP"]
 ignore = ["E501"]
 
-# ---------------------------------------------------------------------------
-# mypy (type checker — optional)
-# ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.11"
 strict = false
