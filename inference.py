@@ -60,32 +60,17 @@ def log_end(task_id: str, score: float) -> None:
 # ---------------------------------------------------------------------------
 
 def _extract_json(text: str) -> dict:
-    """
-    Robustly extract a JSON object from raw LLM output.
-    Handles:
-      - bare JSON
-      - ```json ... ``` fences
-      - leading/trailing prose with embedded JSON object
-    Raises json.JSONDecodeError if no valid object is found.
-    """
     text = text.strip()
-
-    # 1. Strip markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
-
-    # 2. Try direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-
-    # 3. Grab first {...} block (handles leading prose)
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         return json.loads(match.group())
-
     raise json.JSONDecodeError("No JSON object found", text, 0)
 
 
@@ -96,7 +81,6 @@ def llm_action(observation: dict, retries: int = 2) -> dict:
         + json.dumps(observation, indent=2)
         + "\n\nRespond with only the JSON action object."
     )
-    last_exc: Exception = RuntimeError("no attempts made")
 
     for attempt in range(1, retries + 2):
         try:
@@ -112,10 +96,8 @@ def llm_action(observation: dict, retries: int = 2) -> dict:
             raw = resp.choices[0].message.content or ""
             return _extract_json(raw)
         except (json.JSONDecodeError, KeyError, IndexError) as exc:
-            last_exc = exc
             print(f"[WARN] JSON parse failed (attempt {attempt}): {exc}", file=sys.stderr)
 
-    # Final fallback: return a safe default action so the episode doesn't crash
     print("[WARN] All LLM attempts failed – using fallback action", file=sys.stderr)
     return {
         "chosen_team": "account_support",
@@ -130,16 +112,10 @@ def llm_action(observation: dict, retries: int = 2) -> dict:
 # ---------------------------------------------------------------------------
 
 def run_task(task_id: str) -> float:
-    # Reset – grab episode_id from the response
-    r = requests.post(
-        f"{ENV_URL}/reset",
-        json={"task_id": task_id},
-        timeout=30,
-    )
+    r = requests.post(f"{ENV_URL}/reset", json={"task_id": task_id}, timeout=30)
     r.raise_for_status()
     payload = r.json()
 
-    # episode_id lives in info{}; fall back gracefully if missing
     episode_id: str = payload.get("info", {}).get("episode_id", "")
     headers = {"X-Episode-Id": episode_id} if episode_id else {}
 
@@ -147,17 +123,13 @@ def run_task(task_id: str) -> float:
 
     obs: dict = payload.get("observation", payload)
     final_score = 0.0
+    reward = 0.0  # ensure reward is always defined
 
-    for step_idx in range(1, 6):  # max 5 steps
+    for step_idx in range(1, 6):
         action = llm_action(obs)
         log_step(task_id, step_idx, action)
 
-        s = requests.post(
-            f"{ENV_URL}/step",
-            json=action,
-            headers=headers,
-            timeout=30,
-        )
+        s = requests.post(f"{ENV_URL}/step", json=action, headers=headers, timeout=30)
         s.raise_for_status()
         result = s.json()
 
@@ -169,7 +141,8 @@ def run_task(task_id: str) -> float:
             final_score = float(reward)
             break
     else:
-        final_score = float(obs.get("reward", 0.0))
+        # BUG FIX: was float(obs.get("reward", 0.0)) — reward is already extracted above
+        final_score = float(reward)
 
     log_end(task_id, final_score)
     return final_score
@@ -191,6 +164,13 @@ if __name__ == "__main__":
             sc = 0.0
             log_end(tid, sc)
         scores.append(sc)
+
+    summary = {
+        "scores": scores,
+        "mean_score": round(sum(scores) / len(scores), 4),
+    }
+    print(json.dumps(summary))
+
 
     summary = {
         "scores": scores,
