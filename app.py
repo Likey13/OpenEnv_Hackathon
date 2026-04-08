@@ -1,11 +1,14 @@
 from __future__ import annotations
+
 import threading
-from fastapi import FastAPI, HTTPException, Header
-from fastapi.middleware.cors import CORSMiddleware
+import uuid
 from typing import Optional
 
-from models import TriageAction, TicketObservation, TicketState, ResetRequest, StepResponse
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
 from environment import SupportTriageEnvironment
+from models import ResetRequest, StepResponse, TicketState, TriageAction
 from tasks import TASKS
 
 app = FastAPI(
@@ -22,10 +25,10 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# Session registry – one SupportTriageEnvironment per episode_id.
+# Session registry - one SupportTriageEnvironment per episode_id.
 # A global lock protects reads/writes to the registry dict itself.
 # Each individual environment also carries its own lock so concurrent
-# calls to the *same* episode are serialised correctly.
+# calls to the same episode are serialized correctly.
 # ---------------------------------------------------------------------------
 _registry: dict[str, tuple[SupportTriageEnvironment, threading.Lock]] = {}
 _registry_lock = threading.Lock()
@@ -35,118 +38,103 @@ _registry_lock = threading.Lock()
 _latest_episode_id: str = ""
 
 
-def _get_env(episode_id: str) -> tuple[SupportTriageEnvironment, threading.Lock]:
-    with _registry_lock:
-        if episode_id not in _registry:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Unknown episode_id '{episode_id}'. Call POST /reset first.",
-            )
-        return _registry[episode_id]
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@app.get("/", tags=["health"])
-def health() -> dict:
-    return {"status": "ok", "env": "support-triage-openenv"}
-
-
-@app.post("/reset", response_model=StepResponse, tags=["env"])
-def reset(request: ResetRequest = ResetRequest()) -> StepResponse:
-    """
-    Reset the environment and return the initial observation.
-    The response includes the episode_id inside observation.task_id context;
-    pass it back as the X-Episode-Id header on subsequent /step and /state calls.
-    If omitted, the server uses the most recent episode (single-client mode).
-    """
+def _create_episode(task_id: str) -> tuple[str, dict]:
     env = SupportTriageEnvironment()
-    env_lock = threading.Lock()
+    observation = env.reset(task_id)
 
-    try:
-        obs: TicketObservation = env.reset(task_id=request.task_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    episode_id = str(uuid.uuid4())
 
-    episode_id = env.state().episode_id
-
-    global _latest_episode_id
     with _registry_lock:
-        # Evict old episodes beyond 50 to prevent unbounded growth
-        if len(_registry) >= 50:
-            oldest = next(iter(_registry))
-            del _registry[oldest]
-        _registry[episode_id] = (env, env_lock)
+        _registry[episode_id] = (env, threading.Lock())
+        global _latest_episode_id
         _latest_episode_id = episode_id
 
-    return StepResponse(
-        observation=obs,
-        reward=0.0,
-        done=False,
-        info={"episode_id": episode_id},
-    )
+    return episode_id, observation.model_dump()
 
 
-@app.post("/step", response_model=StepResponse, tags=["env"])
+def _resolve_episode_id(header_episode_id: Optional[str]) -> str:
+    episode_id = header_episode_id or _latest_episode_id
+    if not episode_id:
+        raise HTTPException(status_code=400, detail="Missing episode ID")
+    return episode_id
+
+
+def _get_episode(header_episode_id: Optional[str]) -> tuple[str, SupportTriageEnvironment, threading.Lock]:
+    episode_id = _resolve_episode_id(header_episode_id)
+
+    with _registry_lock:
+        record = _registry.get(episode_id)
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Episode not found")
+
+    env, env_lock = record
+    return episode_id, env, env_lock
+
+
+@app.get("/")
+def health() -> dict:
+    return {"status": "ok", "environment": "support-triage-openenv"}
+
+
+@app.post("/reset")
+def reset(request: ResetRequest) -> dict:
+    if request.task_id not in TASKS:
+        raise HTTPException(status_code=400, detail=f"Unknown task_id: {request.task_id}")
+
+    episode_id, observation = _create_episode(request.task_id)
+    return {
+        "observation": observation,
+        "info": {"episode_id": episode_id},
+    }
+
+
+@app.post("/step", response_model=StepResponse)
 def step(
     action: TriageAction,
-    x_episode_id: Optional[str] = Header(default=None),
+    x_episode_id: Optional[str] = Header(default=None, alias="X-Episode-Id"),
 ) -> StepResponse:
-    """
-    Apply an action and return the next observation, reward, and done flag.
-    Pass the episode_id returned by /reset as the X-Episode-Id header.
-    Omit the header to act on the most recent episode (single-client mode).
-    """
-    episode_id = x_episode_id or _latest_episode_id
-    if not episode_id:
-        raise HTTPException(status_code=400, detail="No active episode. Call POST /reset first.")
-
-    env, env_lock = _get_env(episode_id)
+    _, env, env_lock = _get_episode(x_episode_id)
 
     with env_lock:
         try:
-            obs, reward, done = env.step(action)
+            observation, reward, done = env.step(action)
         except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return StepResponse(
-        observation=obs,
+        observation=observation,
         reward=reward,
         done=done,
-        info={"episode_id": episode_id},
     )
 
 
-@app.get("/state", response_model=TicketState, tags=["env"])
-def state(x_episode_id: Optional[str] = Header(default=None)) -> TicketState:
-    """
-    Return the current internal state of the environment.
-    Pass X-Episode-Id header or omit for the most recent episode.
-    """
-    episode_id = x_episode_id or _latest_episode_id
-    if not episode_id:
-        raise HTTPException(status_code=400, detail="No active episode. Call POST /reset first.")
+@app.get("/state", response_model=TicketState)
+def state(
+    x_episode_id: Optional[str] = Header(default=None, alias="X-Episode-Id"),
+) -> TicketState:
+    _, env, env_lock = _get_episode(x_episode_id)
 
-    env, env_lock = _get_env(episode_id)
     with env_lock:
-        return env.state()
+        try:
+            return env.state()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/tasks", tags=["info"])
-def list_tasks() -> dict:
-    """List available tasks with metadata."""
+@app.get("/tasks")
+def tasks() -> dict:
     return {
         "tasks": [
             {
-                "task_id": t.task_id,
-                "customer_tier": t.customer_tier,
-                "correct_team": t.correct_team,
-                "correct_urgency": t.correct_urgency,
-                "needs_clarification": t.needs_clarification,
-                "progress_hint": t.progress_hint,
+                "task_id": task.task_id,
+                "correct_team": task.correct_team,
+                "correct_urgency": task.correct_urgency,
+                "needs_clarification": task.needs_clarification,
+                "progress_hint": task.progress_hint,
             }
-            for t in TASKS.values()
+            for task in TASKS.values()
         ]
     }
